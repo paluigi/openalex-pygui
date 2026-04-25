@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-openalex-pygui = "openalex_pygui.main:main"
+openalex-pygui = "openalex_pygui.main:app_entry"
 
 [build-system]
 requires = ["hatchling"]

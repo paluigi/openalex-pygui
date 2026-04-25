@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS works (
     cited_by_count  INTEGER DEFAULT 0,
     abstract        TEXT,
     bibtex          TEXT,
+    notes           TEXT DEFAULT '',
+    journal         TEXT,
     date_added      TEXT DEFAULT (datetime('now'))
 );
 
@@ -50,6 +52,11 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
+_MIGRATIONS = [
+    "ALTER TABLE works ADD COLUMN notes TEXT DEFAULT ''",
+    "ALTER TABLE works ADD COLUMN journal TEXT",
+]
+
 
 class Database:
     """Thin wrapper around an SQLite connection for the library."""
@@ -60,6 +67,14 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(_SCHEMA)
+        self._run_migrations()
+
+    def _run_migrations(self):
+        for sql in _MIGRATIONS:
+            try:
+                self.conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass
 
     # ── Works ──────────────────────────────────────────────────────────
 
@@ -73,17 +88,18 @@ class Database:
         work_type: str | None = None,
         cited_by_count: int = 0,
         abstract: str | None = None,
+        journal: str | None = None,
         authors: list[dict] | None = None,
         keywords: list[str] | None = None,
         relationships: list[dict] | None = None,
     ) -> None:
-        """Insert a work and its related authors / keywords / relationships."""
         with self.conn:
             self.conn.execute(
                 """INSERT OR IGNORE INTO works
-                   (id, doi, title, publication_year, type, cited_by_count, abstract)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (openalex_id, doi, title, publication_year, work_type, cited_by_count, abstract),
+                   (id, doi, title, publication_year, type, cited_by_count, abstract, journal)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (openalex_id, doi, title, publication_year, work_type,
+                 cited_by_count, abstract, journal),
             )
 
             if authors:
@@ -119,6 +135,12 @@ class Database:
         with self.conn:
             self.conn.execute("DELETE FROM works WHERE id = ?", (openalex_id,))
 
+    def remove_works(self, openalex_ids: list[str]) -> None:
+        with self.conn:
+            self.conn.executemany(
+                "DELETE FROM works WHERE id = ?", [(wid,) for wid in openalex_ids]
+            )
+
     def get_work(self, openalex_id: str) -> dict | None:
         row = self.conn.execute("SELECT * FROM works WHERE id = ?", (openalex_id,)).fetchone()
         if not row:
@@ -127,7 +149,6 @@ class Database:
         return dict(zip(cols, row))
 
     def list_works(self, *, search: str | None = None, sort_by: str = "date_added") -> list[dict]:
-        """Return saved works, optionally filtered by a search term."""
         order_cols = {"title", "publication_year", "cited_by_count", "date_added"}
         if sort_by not in order_cols:
             sort_by = "date_added"
@@ -159,6 +180,18 @@ class Database:
                 "UPDATE works SET bibtex = ? WHERE id = ?", (bibtex, openalex_id)
             )
 
+    def set_notes(self, openalex_id: str, notes: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE works SET notes = ? WHERE id = ?", (notes, openalex_id)
+            )
+
+    def set_abstract(self, openalex_id: str, abstract: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE works SET abstract = ? WHERE id = ?", (abstract, openalex_id)
+            )
+
     # ── Authors ────────────────────────────────────────────────────────
 
     def get_authors_for_work(self, openalex_id: str) -> list[dict]:
@@ -186,11 +219,18 @@ class Database:
 
     # ── Export ─────────────────────────────────────────────────────────
 
-    def export_bibtex(self) -> str:
-        """Return a BibTeX string of all works that have cached bibtex."""
-        rows = self.conn.execute(
-            "SELECT bibtex FROM works WHERE bibtex IS NOT NULL ORDER BY date_added DESC"
-        ).fetchall()
+    def export_bibtex(self, *, ids: list[str] | None = None) -> str:
+        """Return BibTeX string. If *ids* given, export only those; otherwise all."""
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            rows = self.conn.execute(
+                f"SELECT bibtex FROM works WHERE id IN ({placeholders}) AND bibtex IS NOT NULL",
+                ids,
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT bibtex FROM works WHERE bibtex IS NOT NULL ORDER BY date_added DESC"
+            ).fetchall()
         return "\n\n".join(r[0] for r in rows)
 
     # ── Lifecycle ──────────────────────────────────────────────────────

@@ -4,6 +4,18 @@ import httpx
 from openalexpy import WorksSync, config
 from openalexpy.entities import Work
 
+_SORT_OPTIONS = {
+    "Relevance": "relevance_score:desc",
+    "Most cited": "cited_by_count:desc",
+    "Newest first": "publication_year:desc",
+    "Oldest first": "publication_year:asc",
+}
+
+
+def _parse_sort(sort_value: str) -> dict:
+    field, direction = sort_value.split(":")
+    return {field: direction}
+
 
 class OpenAlexSearcher:
     """Searches OpenAlex and converts results to plain dicts ready for the DB."""
@@ -19,29 +31,36 @@ class OpenAlexSearcher:
         *,
         limit: int = 25,
         sort: str = "relevance_score:desc",
+        semantic: bool = False,
     ) -> list[dict]:
-        """Return a list of work dicts matching *query*."""
-        works = WorksSync()
-        results: list[Work] = works.search(query).sort(sort).get(per_page=limit)
+        ws = WorksSync()
+        if semantic:
+            ws = ws.similar(query)
+            if sort != "relevance_score:desc":
+                q = ws.sort(**_parse_sort(sort))
+                ws._params = q.params
+        else:
+            q = ws.search(query).sort(**_parse_sort(sort))
+            ws._params = q.params
+        results: list[Work] = ws.get(per_page=limit)
 
         out: list[dict] = []
         for w in results:
             authors = []
             if hasattr(w, "authorships") and w.authorships:
                 for i, a in enumerate(w.authorships):
-                    author_info = a.get("author", {})
                     authors.append(
                         {
-                            "id": author_info.get("id", ""),
-                            "name": author_info.get("display_name", ""),
-                            "orcid": author_info.get("orcid"),
+                            "id": a.author.id or "",
+                            "name": a.author.display_name or "",
+                            "orcid": a.author.orcid,
                             "position": i,
                         }
                     )
 
             keywords = []
             if hasattr(w, "keywords") and w.keywords:
-                keywords = [kw.get("keyword", "") for kw in w.keywords if kw.get("keyword")]
+                keywords = [kw.display_name for kw in w.keywords if kw.display_name]
 
             relationships = []
             if hasattr(w, "related_works") and w.related_works:
@@ -57,6 +76,12 @@ class OpenAlexSearcher:
             if hasattr(w, "abstract"):
                 abstract = w.abstract or ""
 
+            journal = ""
+            if hasattr(w, "primary_location") and w.primary_location:
+                loc = w.primary_location
+                if hasattr(loc, "source") and loc.source:
+                    journal = loc.source.display_name or ""
+
             out.append(
                 {
                     "id": w.id if hasattr(w, "id") else "",
@@ -66,6 +91,7 @@ class OpenAlexSearcher:
                     "type": w.type if hasattr(w, "type") else None,
                     "cited_by_count": w.cited_by_count if hasattr(w, "cited_by_count") else 0,
                     "abstract": abstract,
+                    "journal": journal,
                     "authors": authors,
                     "keywords": keywords,
                     "relationships": relationships,
@@ -74,14 +100,12 @@ class OpenAlexSearcher:
         return out
 
     def fetch_bibtex(self, doi: str) -> str | None:
-        """Fetch BibTeX for a DOI via content negotiation, Crossref as fallback."""
         headers: dict[str, str] = {"Accept": "application/x-bibtex"}
         if self._email:
             headers["User-Agent"] = (
                 f"OpenAlex-PyGUI/0.1 (mailto:{self._email})"
             )
 
-        # Primary: doi.org content negotiation
         try:
             r = httpx.get(
                 f"https://doi.org/{doi}",
@@ -94,7 +118,6 @@ class OpenAlexSearcher:
         except httpx.HTTPError:
             pass
 
-        # Fallback: Crossref transform API
         try:
             r = httpx.get(
                 f"https://api.crossref.org/works/{doi}/transform/application/x-bibtex",
