@@ -1,0 +1,21 @@
+[project]
+name = "openalex-pygui"
+version = "0.1.0"
+description = "Desktop app to search OpenAlex, manage a local library, and export BibTeX"
+requires-python = ">=3.11"
+dependencies = [
+    "flet>=0.82.0",
+    "openalex-py",
+    "httpx",
+    "pyshortcuts",
+]
+
+[project.scripts]
+openalex-pygui = "openalex_pygui.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openalex_pygui"]
