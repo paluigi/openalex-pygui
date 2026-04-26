@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS work_tags (
+    work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+    tag     TEXT NOT NULL,
+    PRIMARY KEY (work_id, tag)
+);
 """
 
 _MIGRATIONS = [
@@ -148,23 +154,44 @@ class Database:
         cols = [d[0] for d in self.conn.execute("SELECT * FROM works LIMIT 0").description]
         return dict(zip(cols, row))
 
-    def list_works(self, *, search: str | None = None, sort_by: str = "date_added") -> list[dict]:
+    def list_works(
+        self,
+        *,
+        search: str | None = None,
+        sort_by: str = "date_added",
+        keyword: str | None = None,
+        tag: str | None = None,
+    ) -> list[dict]:
         order_cols = {"title", "publication_year", "cited_by_count", "date_added"}
         if sort_by not in order_cols:
             sort_by = "date_added"
 
-        if search:
-            rows = self.conn.execute(
-                f"""SELECT * FROM works
-                    WHERE title LIKE ? OR abstract LIKE ?
-                    ORDER BY {sort_by} DESC""",
-                (f"%{search}%", f"%{search}%"),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                f"SELECT * FROM works ORDER BY {sort_by} DESC"
-            ).fetchall()
+        sql = f"SELECT DISTINCT w.* FROM works w"
+        params: list = []
+        joins: list[str] = []
+        conditions: list[str] = []
 
+        if keyword:
+            joins.append("JOIN work_keywords wk ON w.id = wk.work_id")
+            conditions.append("wk.keyword = ?")
+            params.append(keyword)
+
+        if tag:
+            joins.append("JOIN work_tags wt ON w.id = wt.work_id")
+            conditions.append("wt.tag = ?")
+            params.append(tag)
+
+        if search:
+            conditions.append("(w.title LIKE ? OR w.abstract LIKE ?)")
+            params.extend((f"%{search}%", f"%{search}%"))
+
+        if joins:
+            sql += " " + " ".join(joins)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += f" ORDER BY w.{sort_by} DESC"
+
+        rows = self.conn.execute(sql, params).fetchall()
         cols = [d[0] for d in self.conn.execute("SELECT * FROM works LIMIT 0").description]
         return [dict(zip(cols, r)) for r in rows]
 
@@ -204,6 +231,58 @@ class Database:
         ).fetchall()
         cols = ["id", "name", "orcid", "position"]
         return [dict(zip(cols, r)) for r in rows]
+
+    # ── Relationships ──────────────────────────────────────────────────
+
+    def get_relationships(self, openalex_id: str, rel_type: str | None = None) -> list[dict]:
+        if rel_type:
+            rows = self.conn.execute(
+                "SELECT related_id, relationship FROM work_relationships WHERE work_id = ? AND relationship = ?",
+                (openalex_id, rel_type),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT related_id, relationship FROM work_relationships WHERE work_id = ?",
+                (openalex_id,),
+            ).fetchall()
+        return [{"id": r[0], "type": r[1]} for r in rows]
+
+    # ── Keywords ───────────────────────────────────────────────────────
+
+    def get_keywords_for_work(self, openalex_id: str) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT keyword FROM work_keywords WHERE work_id = ?", (openalex_id,)
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def list_all_keywords(self) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT DISTINCT keyword FROM work_keywords ORDER BY keyword"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    # ── Tags ───────────────────────────────────────────────────────────
+
+    def get_tags_for_work(self, openalex_id: str) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT tag FROM work_tags WHERE work_id = ?", (openalex_id,)
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def set_tags(self, openalex_id: str, tags: list[str]) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM work_tags WHERE work_id = ?", (openalex_id,))
+            for tag in tags:
+                tag = tag.strip()
+                if tag:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO work_tags (work_id, tag) VALUES (?, ?)",
+                        (openalex_id, tag),
+                    )
+
+    def list_all_tags(self) -> list[str]:
+        rows = self.conn.execute("SELECT DISTINCT tag FROM work_tags ORDER BY tag").fetchall()
+        return [r[0] for r in rows]
 
     # ── Settings ───────────────────────────────────────────────────────
 

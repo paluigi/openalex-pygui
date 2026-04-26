@@ -1,5 +1,7 @@
 """OpenAlex Research Manager — Flet desktop application."""
 
+import threading
+
 import flet as ft
 
 from openalex_pygui.api import OpenAlexSearcher, _SORT_OPTIONS
@@ -100,6 +102,16 @@ class App:
             width=140,
             label="Mode",
         )
+        self._scope_dropdown = ft.Dropdown(
+            options=[
+                ft.DropdownOption(key="Title + Abstract"),
+                ft.DropdownOption(key="Title only"),
+                ft.DropdownOption(key="Full text"),
+            ],
+            value="Title + Abstract",
+            width=170,
+            label="Search in",
+        )
         self._results_list = ft.ListView(expand=True, spacing=4)
         self._status = ft.Text()
         self._select_all_search = ft.Checkbox(label="Select all", on_change=self._toggle_select_all_search)
@@ -125,6 +137,7 @@ class App:
                         self._sort_dropdown,
                         self._limit_dropdown,
                         self._mode_dropdown,
+                        self._scope_dropdown,
                     ],
                     spacing=8,
                 ),
@@ -148,10 +161,13 @@ class App:
         sort_value = _SORT_OPTIONS.get(sort_key, "relevance_score:desc")
         limit = int(self._limit_dropdown.value or "25")
         semantic = (self._mode_dropdown.value == "Semantic")
+        scope_map = {"Title only": "title", "Full text": "fulltext"}
+        scope = scope_map.get(self._scope_dropdown.value, "default")
+        self._scope_dropdown.disabled = semantic
 
         try:
             self._search_results = self.searcher.search(
-                query, sort=sort_value, limit=limit, semantic=semantic
+                query, sort=sort_value, limit=limit, semantic=semantic, scope=scope
             )
             self._status.value = f"{len(self._search_results)} results"
         except Exception as exc:
@@ -218,6 +234,8 @@ class App:
                 meta_parts.append(str(work["publication_year"]))
             if work.get("cited_by_count"):
                 meta_parts.append(f"Cited: {work['cited_by_count']}")
+            if work.get("relevance_score") is not None:
+                meta_parts.append(f"Score: {work['relevance_score']:.1f}")
 
             authors = work.get("authors") or []
             if authors:
@@ -232,6 +250,16 @@ class App:
 
             meta = ft.Text(" | ".join(meta_parts), size=12, color=ft.Colors.ON_SURFACE_VARIANT)
 
+            keywords = work.get("keywords") or []
+            keyword_chips = ft.Row(
+                controls=[
+                    ft.Chip(label=ft.Text(kw, size=10), padding=2, height=24)
+                    for kw in keywords[:6]
+                ],
+                spacing=4,
+                wrap=True,
+            ) if keywords else None
+
             doi = work.get("doi") or ""
             doi_link = ft.Text()
             if doi:
@@ -243,6 +271,23 @@ class App:
                         padding=0,
                     ),
                 )
+
+            openalex_id = work.get("id") or ""
+            openalex_link = ft.Text()
+            if openalex_id:
+                openalex_link = ft.TextButton(
+                    content="OpenAlex",
+                    url=openalex_id,
+                    style=ft.ButtonStyle(
+                        text_style=ft.TextStyle(size=11, color=ft.Colors.BLUE),
+                        padding=0,
+                    ),
+                )
+
+            links_row = ft.Row(
+                controls=[c for c in [doi_link, openalex_link] if c is not ft.Text()],
+                spacing=8,
+            )
 
             abstract = work.get("abstract") or ""
             abstract_text = ft.Text(
@@ -266,8 +311,10 @@ class App:
             )
 
             card_body = [title_line, meta]
-            if doi:
-                card_body.append(doi_link)
+            if doi or openalex_id:
+                card_body.append(links_row)
+            if keyword_chips:
+                card_body.append(keyword_chips)
             if abstract:
                 card_body.append(abstract_text)
 
@@ -326,11 +373,28 @@ class App:
         self._fetch_all_bibtex_btn = ft.OutlinedButton(
             "Fetch All BibTeX", on_click=self._fetch_all_bibtex
         )
+        self._kw_dropdown = ft.Dropdown(
+            label="Keyword",
+            options=[ft.DropdownOption(key="(all)")],
+            value="(all)",
+            width=200,
+            on_select=lambda _: self._refresh_library(),
+        )
+        self._tag_dropdown = ft.Dropdown(
+            label="Tag",
+            options=[ft.DropdownOption(key="(all)")],
+            value="(all)",
+            width=200,
+            on_select=lambda _: self._refresh_library(),
+        )
 
         return ft.Column(
             controls=[
                 ft.Row(
                     controls=[self._lib_search, refresh_btn],
+                ),
+                ft.Row(
+                    controls=[self._kw_dropdown, self._tag_dropdown],
                 ),
                 ft.Row(
                     controls=[self._lib_select_all, self._export_selected_btn, self._fetch_all_bibtex_btn],
@@ -342,9 +406,22 @@ class App:
             expand=True,
         )
 
+    def _populate_filter_dropdowns(self):
+        keywords = self.db.list_all_keywords()
+        self._kw_dropdown.options = [ft.DropdownOption(key="(all)")] + [
+            ft.DropdownOption(key=kw) for kw in keywords
+        ]
+        tags = self.db.list_all_tags()
+        self._tag_dropdown.options = [ft.DropdownOption(key="(all)")] + [
+            ft.DropdownOption(key=t) for t in tags
+        ]
+
     def _refresh_library(self):
+        self._populate_filter_dropdowns()
         search = self._lib_search.value or None
-        works = self.db.list_works(search=search)
+        keyword = self._kw_dropdown.value if self._kw_dropdown.value != "(all)" else None
+        tag = self._tag_dropdown.value if self._tag_dropdown.value != "(all)" else None
+        works = self.db.list_works(search=search, keyword=keyword, tag=tag)
         self._lib_status.value = f"{len(works)} works in library"
         self._lib_selected.clear()
         self._lib_select_all.value = False
@@ -377,6 +454,26 @@ class App:
                 meta_parts.append(has_bib)
             meta = ft.Text(" | ".join(meta_parts), size=12, color=ft.Colors.ON_SURFACE_VARIANT)
 
+            work_tags = self.db.get_tags_for_work(w["id"])
+            tags_row = ft.Row(
+                controls=[
+                    ft.Chip(label=ft.Text(t, size=10), padding=2, height=24)
+                    for t in work_tags
+                ],
+                spacing=4,
+                wrap=True,
+            ) if work_tags else None
+
+            work_keywords = self.db.get_keywords_for_work(w["id"])
+            kw_row = ft.Row(
+                controls=[
+                    ft.Chip(label=ft.Text(kw, size=10), padding=2, height=24)
+                    for kw in work_keywords[:4]
+                ],
+                spacing=4,
+                wrap=True,
+            ) if work_keywords else None
+
             edit_btn = ft.IconButton(
                 ft.Icons.EDIT_OUTLINED,
                 tooltip="Edit notes / abstract",
@@ -392,6 +489,59 @@ class App:
                 tooltip="Fetch BibTeX",
                 on_click=lambda _, wid=w["id"]: self._fetch_bibtex(wid),
             )
+            related_btn = ft.IconButton(
+                ft.Icons.HUB_OUTLINED,
+                tooltip="Related works",
+                on_click=lambda _, wid=w["id"]: self._open_related_dialog(wid, "related"),
+            )
+            ref_btn = ft.IconButton(
+                ft.Icons.FORMAT_QUOTE_OUTLINED,
+                tooltip="Referenced works (bibliography)",
+                on_click=lambda _, wid=w["id"]: self._open_related_dialog(wid, "references"),
+            )
+
+            lib_links = []
+            doi = w.get("doi") or ""
+            if doi:
+                lib_links.append(
+                    ft.TextButton(
+                        content=doi,
+                        url=doi,
+                        style=ft.ButtonStyle(
+                            text_style=ft.TextStyle(size=11, color=ft.Colors.BLUE),
+                            padding=0,
+                        ),
+                    )
+                )
+            openalex_id = w.get("id") or ""
+            if openalex_id:
+                lib_links.append(
+                    ft.TextButton(
+                        content="OpenAlex",
+                        url=openalex_id,
+                        style=ft.ButtonStyle(
+                            text_style=ft.TextStyle(size=11, color=ft.Colors.BLUE),
+                            padding=0,
+                        ),
+                    )
+                )
+            lib_links_row = ft.Row(controls=lib_links, spacing=8) if lib_links else None
+
+            card_content = [
+                ft.Text(
+                    w["title"],
+                    weight=ft.FontWeight.BOLD,
+                    max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+                meta,
+            ]
+            if lib_links_row:
+                card_content.append(lib_links_row)
+            if tags_row:
+                card_content.append(tags_row)
+            if kw_row:
+                card_content.append(kw_row)
 
             self._lib_list.controls.append(
                 ft.Card(
@@ -399,20 +549,10 @@ class App:
                         content=ft.Row(
                             controls=[
                                 cb,
-                                ft.Column(
-                                    [
-                                        ft.Text(
-                                            w["title"],
-                                            weight=ft.FontWeight.BOLD,
-                                            max_lines=2,
-                                            overflow=ft.TextOverflow.ELLIPSIS,
-                                        ),
-                                        meta,
-                                    ],
-                                    spacing=4,
-                                    expand=True,
-                                ),
+                                ft.Column(card_content, spacing=4, expand=True),
                                 bibtex_btn,
+                                related_btn,
+                                ref_btn,
                                 edit_btn,
                                 remove_btn,
                             ],
@@ -516,22 +656,52 @@ class App:
             min_lines=3,
             max_lines=8,
         )
+        current_tags = self.db.get_tags_for_work(work_id)
+        existing_tags = self.db.list_all_tags()
+        tags_field = ft.TextField(
+            label="Tags (comma-separated)",
+            value=", ".join(current_tags),
+            hint_text="e.g. important, to-read",
+        )
+        # Suggestion chips from existing tags
+        suggestion_chips = []
+        for t in existing_tags:
+            if t not in current_tags:
+                def add_tag(_, tag=t):
+                    current = [x.strip() for x in tags_field.value.split(",") if x.strip()]
+                    if tag not in current:
+                        current.append(tag)
+                        tags_field.value = ", ".join(current)
+                        self.page.update()
+                suggestion_chips.append(
+                    ft.ActionChip(label=ft.Text(t, size=11), on_click=add_tag, height=28)
+                )
+        suggestions_row = ft.Row(
+            controls=suggestion_chips, spacing=4, wrap=True, visible=bool(suggestion_chips)
+        )
 
         def save_edit(_):
             self.db.set_notes(work_id, notes_field.value or "")
             self.db.set_abstract(work_id, abstract_field.value or "")
+            tags = [t.strip() for t in tags_field.value.split(",") if t.strip()]
+            self.db.set_tags(work_id, tags)
             self.page.pop_dialog()
             self._refresh_library()
 
         def close_edit(_):
             self.page.pop_dialog()
 
+        dialog_controls = [notes_field, abstract_field, tags_field]
+        if suggestion_chips:
+            dialog_controls.append(ft.Text("Existing tags:", size=11, color=ft.Colors.ON_SURFACE_VARIANT))
+            dialog_controls.append(suggestions_row)
+
         dlg = ft.AlertDialog(
             title=ft.Text(f"Edit: {work['title'][:60]}"),
             content=ft.Column(
-                controls=[notes_field, abstract_field],
+                controls=dialog_controls,
                 width=500,
-                height=400,
+                height=450,
                 scroll=ft.ScrollMode.AUTO,
             ),
             actions=[
@@ -540,6 +710,168 @@ class App:
             ],
         )
         self.page.show_dialog(dlg)
+
+    def _related_work_card(self, work: dict) -> ft.Card:
+        saved = self.db.work_exists(work["id"])
+
+        title_line = ft.Text(
+            work["title"],
+            weight=ft.FontWeight.BOLD,
+            max_lines=2,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
+
+        meta_parts = []
+        if work.get("publication_year"):
+            meta_parts.append(str(work["publication_year"]))
+        if work.get("cited_by_count"):
+            meta_parts.append(f"Cited: {work['cited_by_count']}")
+        authors = work.get("authors") or []
+        if authors:
+            author_str = ", ".join(a["name"] for a in authors[:3])
+            if len(authors) > 3:
+                author_str += " et al."
+            meta_parts.append(author_str)
+        journal = work.get("journal") or ""
+        if journal:
+            meta_parts.append(journal)
+        meta = ft.Text(" | ".join(meta_parts), size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+
+        doi = work.get("doi") or ""
+        doi_link = ft.Text()
+        if doi:
+            doi_link = ft.TextButton(
+                content=doi,
+                url=doi,
+                style=ft.ButtonStyle(
+                    text_style=ft.TextStyle(size=11, color=ft.Colors.BLUE),
+                    padding=0,
+                ),
+            )
+
+        openalex_id = work.get("id") or ""
+        openalex_link = ft.Text()
+        if openalex_id:
+            openalex_link = ft.TextButton(
+                content="OpenAlex",
+                url=openalex_id,
+                style=ft.ButtonStyle(
+                    text_style=ft.TextStyle(size=11, color=ft.Colors.BLUE),
+                    padding=0,
+                ),
+            )
+
+        links_row = ft.Row(
+            controls=[c for c in [doi_link, openalex_link] if c is not ft.Text()],
+            spacing=8,
+        )
+
+        keywords = work.get("keywords") or []
+        keyword_chips = ft.Row(
+            controls=[
+                ft.Chip(label=ft.Text(kw, size=10), padding=2, height=24)
+                for kw in keywords[:6]
+            ],
+            spacing=4,
+            wrap=True,
+        ) if keywords else None
+
+        abstract = work.get("abstract") or ""
+        abstract_text = ft.Text(
+            abstract[:200] + "..." if len(abstract) > 200 else abstract,
+            size=12,
+            max_lines=2,
+            overflow=ft.TextOverflow.ELLIPSIS,
+            italic=True,
+        )
+
+        save_btn = ft.FilledButton(
+            "Saved" if saved else "Save",
+            disabled=saved,
+        )
+        if not saved:
+            def on_save(_, w=work, btn=save_btn):
+                self._save_work_to_db(w)
+                btn.text = "Saved"
+                btn.disabled = True
+                self.page.update()
+            save_btn.on_click = on_save
+
+        card_body = [title_line, meta]
+        if doi or openalex_id:
+            card_body.append(links_row)
+        if keyword_chips:
+            card_body.append(keyword_chips)
+        if abstract:
+            card_body.append(abstract_text)
+        card_body.append(save_btn)
+
+        return ft.Card(
+            content=ft.Container(
+                content=ft.Column(card_body, spacing=4),
+                padding=10,
+            )
+        )
+
+    def _open_related_dialog(self, work_id: str, rel_type: str):
+        relationships = self.db.get_relationships(work_id, rel_type=rel_type)
+        if not relationships:
+            label = "related" if rel_type == "related" else "referenced"
+            self._lib_status.value = f"No {label} works stored for this entry."
+            self.page.update()
+            return
+
+        ids = [r["id"] for r in relationships]
+        label = "Related" if rel_type == "related" else "Referenced"
+
+        self._fetch_status = ft.Text(f"Fetching 0/{len(ids)} {label.lower()} works...")
+        loading = ft.Column(
+            controls=[
+                ft.ProgressRing(),
+                self._fetch_status,
+            ],
+            width=650,
+            height=200,
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        dlg = ft.AlertDialog(
+            title=ft.Text(f"{label} Works"),
+            content=loading,
+            actions=[ft.TextButton("Close", on_click=lambda _: self.page.pop_dialog())],
+        )
+        self.page.show_dialog(dlg)
+        self.page.update()
+
+        def fetch_and_populate():
+            works = []
+            for i, rid in enumerate(ids):
+                w = self.searcher.fetch_work_by_id(rid)
+                if w:
+                    works.append(w)
+                self._fetch_status.value = f"Fetching {i + 1}/{len(ids)} {label.lower()} works..."
+                self.page.update()
+
+            if not works:
+                loading.controls = [ft.Text(f"Could not resolve any {label.lower()} works.")]
+                self.page.update()
+                return
+
+            sections = [
+                ft.Text(f"{len(works)} found (of {len(ids)} stored)", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+            ]
+            for w in works:
+                sections.append(self._related_work_card(w))
+
+            dlg.content = ft.Column(
+                controls=sections,
+                width=650,
+                height=500,
+                scroll=ft.ScrollMode.AUTO,
+            )
+            self.page.update()
+
+        threading.Thread(target=fetch_and_populate, daemon=True).start()
 
     # ── Settings tab ───────────────────────────────────────────────────
 
