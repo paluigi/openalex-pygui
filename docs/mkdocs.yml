@@ -1,0 +1,40 @@
+site_name: openalex-pygui
+site_description: Desktop app to search OpenAlex, manage a local library, and export BibTeX
+site_url: https://openalex-pygui.readthedocs.io
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [../src]
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Search: search.md
+  - Library: library.md
+  - BibTeX Export: bibtex.md
+  - Settings: settings.md
+  - API Reference: api-reference.md
