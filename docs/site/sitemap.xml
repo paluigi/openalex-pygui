@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://openalex-pygui.readthedocs.io/</loc>
+         <lastmod>2026-04-27</lastmod>
+    </url>
+    <url>
+         <loc>https://openalex-pygui.readthedocs.io/api-reference/</loc>
+         <lastmod>2026-04-27</lastmod>
+    </url>
+    <url>
+         <loc>https://openalex-pygui.readthedocs.io/bibtex/</loc>
+         <lastmod>2026-04-27</lastmod>
+    </url>
+    <url>
+         <loc>https://openalex-pygui.readthedocs.io/getting-started/</loc>
+         <lastmod>2026-04-27</lastmod>
+    </url>
+    <url>
+         <loc>https://openalex-pygui.readthedocs.io/library/</loc>
+         <lastmod>2026-04-27</lastmod>
+    </url>
+    <url>
+         <loc>https://openalex-pygui.readthedocs.io/search/</loc>
+         <lastmod>2026-04-27</lastmod>
+    </url>
+    <url>
+         <loc>https://openalex-pygui.readthedocs.io/settings/</loc>
+         <lastmod>2026-04-27</lastmod>
+    </url>
+</urlset>
